@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>テトリス</title>
+  <style>
+    body {
+      text-align: center;
+      font-family: sans-serif;
+      background: #eee;
+      margin: 0;
+      padding: 20px;
+    }
+    /* 大きくカラフルな「ゲーム開始」ボタン */
+    #startButton {
+      font-size: 20px;
+      padding: 12px 24px;
+      background: linear-gradient(to right, #ff7e5f, #feb47b);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+      margin-bottom: 10px;
+    }
+    #startButton:hover {
+      transform: scale(1.1);
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+    }
+    canvas {
+      background: #000;
+      display: block;
+      margin: 10px auto;
+      border: 2px solid #333;
+    }
+    #scoreBoard {
+      font-size: 18px;
+      margin-bottom: 10px;
+    }
+  </style>
+</head>
+<body>
+  <button id="startButton">ゲーム開始</button>
+  <div id="scoreBoard">
+    Score: <span id="score">0</span>
+    <span id="message" style="color: red;"></span>
+  </div>
+  <canvas id="gameCanvas" width="200" height="400"></canvas>
+  <!-- ブロック消滅時の効果音 -->
+  <audio id="clearSound" src="https://actions.google.com/sounds/v1/alarms/beep_short.ogg"></audio>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const scoreElement = document.getElementById('score');
+    const messageElement = document.getElementById('message');
+    const startButton = document.getElementById('startButton');
+    const clearSound = document.getElementById('clearSound');
+
+    const COLS = 10;
+    const ROWS = 20;
+    const BLOCK_SIZE = 20;
+
+    let board = [];
+    let currentPiece;
+    let gameInterval;
+    let score = 0;
+    let gameOver = false;
+    // 落下速度変更済みかのフラグ（初期はfalse）
+    let speedIncreased = false;
+
+    // テトリミノの形状定義
+    const SHAPES = {
+      I: [
+        [0,0,0,0],
+        [1,1,1,1],
+        [0,0,0,0],
+        [0,0,0,0]
+      ],
+      J: [
+        [1,0,0],
+        [1,1,1],
+        [0,0,0]
+      ],
+      L: [
+        [0,0,1],
+        [1,1,1],
+        [0,0,0]
+      ],
+      O: [
+        [1,1],
+        [1,1]
+      ],
+      S: [
+        [0,1,1],
+        [1,1,0],
+        [0,0,0]
+      ],
+      T: [
+        [0,1,0],
+        [1,1,1],
+        [0,0,0]
+      ],
+      Z: [
+        [1,1,0],
+        [0,1,1],
+        [0,0,0]
+      ]
+    };
+
+    const COLORS = {
+      I: 'cyan',
+      J: 'blue',
+      L: 'orange',
+      O: 'yellow',
+      S: 'green',
+      T: 'purple',
+      Z: 'red'
+    };
+
+    // ランダムにテトリミノを生成
+    function randomPiece() {
+      const types = Object.keys(SHAPES);
+      const type = types[Math.floor(Math.random() * types.length)];
+      const shape = SHAPES[type];
+      return {
+        type: type,
+        shape: shape,
+        x: Math.floor((COLS - shape[0].length) / 2),
+        y: 0
+      };
+    }
+
+    // ゲーム盤を初期化
+    function createBoard() {
+      board = [];
+      for (let r = 0; r < ROWS; r++) {
+        board[r] = [];
+        for (let c = 0; c < COLS; c++) {
+          board[r][c] = '';
+        }
+      }
+    }
+
+    // 盤面描画
+    function drawBoard() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+          if (board[r][c]) {
+            ctx.fillStyle = board[r][c];
+            ctx.fillRect(c * BLOCK_SIZE, r * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+            ctx.strokeStyle = '#000';
+            ctx.strokeRect(c * BLOCK_SIZE, r * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+          }
+        }
+      }
+    }
+
+    // 現在のテトリミノ描画
+    function drawPiece(piece) {
+      const shape = piece.shape;
+      for (let r = 0; r < shape.length; r++) {
+        for (let c = 0; c < shape[r].length; c++) {
+          if (shape[r][c]) {
+            ctx.fillStyle = COLORS[piece.type];
+            ctx.fillRect((piece.x + c) * BLOCK_SIZE, (piece.y + r) * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+            ctx.strokeStyle = '#000';
+            ctx.strokeRect((piece.x + c) * BLOCK_SIZE, (piece.y + r) * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+          }
+        }
+      }
+    }
+
+    // 衝突判定
+    function isValidMove(piece, offsetX, offsetY, newShape = null) {
+      const shape = newShape || piece.shape;
+      for (let r = 0; r < shape.length; r++) {
+        for (let c = 0; c < shape[r].length; c++) {
+          if (shape[r][c]) {
+            const newX = piece.x + c + offsetX;
+            const newY = piece.y + r + offsetY;
+            if (newX < 0 || newX >= COLS || newY >= ROWS) {
+              return false;
+            }
+            if (newY >= 0 && board[newY][newX]) {
+              return false;
+            }
+          }
+        }
+      }
+      return true;
+    }
+
+    // テトリミノの回転
+    function rotate(matrix) {
+      const N = matrix.length;
+      let result = [];
+      for (let i = 0; i < N; i++) {
+        result[i] = [];
+        for (let j = 0; j < N; j++) {
+          result[i][j] = matrix[N - j - 1][i];
+        }
+      }
+      return result;
+    }
+
+    // テトリミノを盤面に固定
+    function lockPiece(piece) {
+      const shape = piece.shape;
+      for (let r = 0; r < shape.length; r++) {
+        for (let c = 0; c < shape[r].length; c++) {
+          if (shape[r][c]) {
+            // 盤面上部に達している場合はゲームオーバー
+            if (piece.y + r < 0) {
+              gameOver = true;
+              return;
+            }
+            board[piece.y + r][piece.x + c] = COLORS[piece.type];
+          }
+        }
+      }
+    }
+
+    // ラインクリアとスコア更新、効果音再生、お祝いメッセージの表示、速度変更
+    function clearLines() {
+      let linesCleared = 0;
+      for (let r = ROWS - 1; r >= 0; r--) {
+        if (board[r].every(cell => cell !== '')) {
+          board.splice(r, 1);
+          board.unshift(new Array(COLS).fill(''));
+          linesCleared++;
+          r++; // 行がシフトするので再チェック
+        }
+      }
+      if (linesCleared > 0) {
+        score += linesCleared * 10;
+        scoreElement.textContent = score;
+        clearSound.currentTime = 0;
+        clearSound.play();
+
+        // スコア300以上ならゲームクリア
+        if (score >= 300) {
+          gameOver = true;
+          showGameClear();
+          return;
+        }
+        // スコア100以上で、まだ速度変更していなければ落下速度を早くする
+        if (score >= 100 && !speedIncreased) {
+          speedIncreased = true;
+          clearInterval(gameInterval);
+          gameInterval = setInterval(gameLoop, 300);  // 落下速度を早く（例：300ms）
+          messageElement.textContent = "スピードアップ！";
+          setTimeout(() => { messageElement.textContent = ""; }, 2000);
+        }
+        // 50点ごとにランダムなお祝いメッセージ（ただし、100点時は速度変更のメッセージが優先）
+        else if (score % 50 === 0) {
+          const congratsMessages = [
+            "最高だね！",
+            "クールだね！",
+            "輝いてる！",
+            "素晴らしい！",
+            "絶好調！",
+            "イケてる！",
+            "パーフェクト！"
+          ];
+          messageElement.textContent = congratsMessages[Math.floor(Math.random() * congratsMessages.length)];
+          setTimeout(() => { messageElement.textContent = ""; }, 2000);
+        }
+      }
+    }
+
+    // ゲームクリア時の表示
+    function showGameClear() {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.fillRect(0, canvas.height / 2 - 50, canvas.width, 100);
+      ctx.fillStyle = '#FFF';
+      ctx.font = '24px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText("🎉 ゲームクリア！ 🎉", canvas.width / 2, canvas.height / 2 - 10);
+      ctx.font = '18px Arial';
+      ctx.fillText("🌟 伝説級のプレイ！ 🌟", canvas.width / 2, canvas.height / 2 + 20);
+    }
+
+    // ゲームループ
+    function gameLoop() {
+      if (gameOver) {
+        clearInterval(gameInterval);
+        // ゲームオーバーの場合は、スコアが300未満なら Game Over 表示
+        if (score < 300) {
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+          ctx.fillRect(0, canvas.height / 2 - 30, canvas.width, 60);
+          ctx.fillStyle = '#FFF';
+          ctx.font = '20px Arial';
+          ctx.textAlign = 'center';
+          ctx.fillText("Game Over!", canvas.width / 2, canvas.height / 2 + 10);
+        }
+        return;
+      }
+      // テトリミノの自動落下処理
+      if (isValidMove(currentPiece, 0, 1)) {
+        currentPiece.y++;
+      } else {
+        lockPiece(currentPiece);
+        clearLines();
+        currentPiece = randomPiece();
+        if (!isValidMove(currentPiece, 0, 0)) {
+          gameOver = true;
+        }
+      }
+      drawBoard();
+      drawPiece(currentPiece);
+    }
+
+    // キー操作（←→↓で移動、↑で回転）
+    document.addEventListener('keydown', function(e) {
+      if (gameOver) return;
+      if (e.key === 'ArrowLeft') {
+        if (isValidMove(currentPiece, -1, 0)) {
+          currentPiece.x--;
+        }
+      } else if (e.key === 'ArrowRight') {
+        if (isValidMove(currentPiece, 1, 0)) {
+          currentPiece.x++;
+        }
+      } else if (e.key === 'ArrowDown') {
+        if (isValidMove(currentPiece, 0, 1)) {
+          currentPiece.y++;
+        }
+      } else if (e.key === 'ArrowUp') {
+        const rotated = rotate(currentPiece.shape);
+        if (isValidMove(currentPiece, 0, 0, rotated)) {
+          currentPiece.shape = rotated;
+        }
+      }
+      drawBoard();
+      drawPiece(currentPiece);
+    });
+
+    // ゲーム開始／再開処理
+    function startGame() {
+      gameOver = false;
+      score = 0;
+      speedIncreased = false;
+      scoreElement.textContent = score;
+      messageElement.textContent = "";
+      createBoard();
+      currentPiece = randomPiece();
+      if (gameInterval) {
+        clearInterval(gameInterval);
+      }
+      // 初期落下速度は500ms
+      gameInterval = setInterval(gameLoop, 500);
+      drawBoard();
+      drawPiece(currentPiece);
+    }
+
+    startButton.addEventListener('click', startGame);
+  </script>
+</body>
+</html>
